@@ -2,6 +2,7 @@
 	"BuildId": "55116800",
 	"Modules": 
 	{
-		"GMCMotion": "UnrealEditor-GMCMotion.dll"
+		"GMCMotion": "UnrealEditor-GMCMotion.dll",
+		"GMCMotionRagdoll": "UnrealEditor-GMCMotionRagdoll.dll"
 	}
 }
