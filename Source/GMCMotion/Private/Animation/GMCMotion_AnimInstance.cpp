@@ -270,7 +270,7 @@ void UGMCMotion_AnimInstance::WarmupPoseSearchIndexes() const
 			continue;
 		}
 		TArray<UObject*> Inner;
-		GetObjectsWithOuter(Chooser, Inner, true);
+		GetObjectsWithOuter(Chooser, Inner, EGetObjectsFlags::IncludeNestedObjects);
 		for (const UObject* Object : Inner)
 		{
 			if (const UPoseSearchDatabase* Database = Cast<UPoseSearchDatabase>(Object))

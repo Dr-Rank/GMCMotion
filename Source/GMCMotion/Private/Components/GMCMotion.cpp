@@ -265,7 +265,15 @@ bool UGMCMotion::UpdateSlopeSlideMode(const FGMC_FloorParams& Floor)
 	bool bRequestedEntry = false;
 	if (bHasFloor)
 	{
-		if (bSliding)
+		if (bSliding && UsesFlatSlideModel(FloorAngle))
+		{
+			// GASP's flat slide ends when the speed falls to FlatSlideExitSpeed, and a requested one also when the crouch is
+			// released (BP_MovementTransition_FromSlide), whatever bSlopeSlideAutoStart says. An automatic slope slide that
+			// runs out onto the flat is not ended by a request it never had.
+			bWantsSlide = Velocity.Size2D() > FlatSlideExitSpeed
+				&& (bSlopeSlideRequested || !(bSlopeSlideEndOnRelease && bSlopeSlideRequestedAtStart));
+		}
+		else if (bSliding)
 		{
 			// Steep enough, or still running out (see SlopeSlideExitSpeed) - and, for a requested slide, still held.
 			bWantsSlide = ShouldKeepSlopeSlide(bSlopeSlideRequested, bSlopeSlideEndOnRelease && !bSlopeSlideAutoStart,
@@ -275,7 +283,9 @@ bool UGMCMotion::UpdateSlopeSlideMode(const FGMC_FloorParams& Floor)
 		{
 			const bool bAuto = bSlopeSlideAutoStart && FloorAngle >= SlopeSlideStartAngle;
 			bRequestedEntry = ShouldStartRequestedSlopeSlide(bSlopeSlideRequested, true, FloorAngle,
-				SlopeSlideTriggerMinAngle, GetSlopeSlideDownhillSpeed(FloorNormal), SlopeSlideTriggerMinSpeed);
+				SlopeSlideTriggerMinAngle, GetSlopeSlideDownhillSpeed(FloorNormal), SlopeSlideTriggerMinSpeed)
+				|| (bFlatSlideEnabled && ShouldStartRequestedFlatSlide(bSlopeSlideRequested, true, FloorAngle,
+					SlopeSlideTriggerMinAngle, Velocity.Size2D(), FlatSlideTriggerSpeed));
 			bWantsSlide = (bAuto || bRequestedEntry) && !bReceivedUpwardForce;
 		}
 		else if (IsAirborne() && bSlopeSlideAutoStart)
@@ -295,6 +305,12 @@ bool UGMCMotion::UpdateSlopeSlideMode(const FGMC_FloorParams& Floor)
 	}
 
 	bIsSliding = bWantsSlide;
+	if (!bWantsSlide || !bSliding)
+	{
+		// Not sliding, or a new slide: its elapsed time (the flat model's boost) starts from zero.
+		SlopeSlideElapsed = 0.f;
+		bSlopeSlideRequestedAtStart = bWantsSlide && bRequestedEntry;
+	}
 	if (!bWantsSlide)
 	{
 		// Leaving the slide (or not sliding): GMC's static update grounds the pawn on a walkable floor, else Airborne.
@@ -351,6 +367,31 @@ bool UGMCMotion::ShouldStartRequestedSlopeSlide(bool bRequested, bool bOnGround,
 	double DownhillSpeed, double MinSpeed)
 {
 	return bRequested && bOnGround && FloorAngle >= MinAngle && DownhillSpeed >= MinSpeed;
+}
+
+bool UGMCMotion::ShouldStartRequestedFlatSlide(bool bRequested, bool bOnGround, float FloorAngle, float MaxAngle,
+	double Speed2D, double MinSpeed)
+{
+	return bRequested && bOnGround && FloorAngle < MaxAngle && Speed2D > MinSpeed;
+}
+
+FVector UGMCMotion::ComputeFlatSlideVelocity(const FVector& InVelocity, const FVector& FloorNormal, const FVector& Input,
+	double Elapsed, float DeltaSeconds) const
+{
+	// GASP BP_MovementMode_Slide below ShallowSlopeAngle (SmoothWalking): ease toward Input * MaxSpeed, at Deceleration
+	// while faster than MaxSpeed and at Acceleration otherwise. MaxSpeed and Acceleration are InitialBoostSpeed and
+	// InitialBoostAcceleration for InitialBoostTime (OnActivated sets InitialBoost, a Delay clears it), then
+	// FlatGroundSpeed and AfterBoostAcceleration. All in the floor plane.
+	const FVector Planar = InVelocity - (InVelocity | FloorNormal) * FloorNormal;
+	const FVector PlanarInput = (Input - (Input | FloorNormal) * FloorNormal).GetClampedToMaxSize(1.);
+	const bool bBoost = Elapsed < FlatSlideBoostTime;
+	const double Target = bBoost ? FlatSlideBoostSpeed : FlatSlideTargetSpeed;
+	// Slowing toward the desired velocity uses the deceleration (SmoothWalking): with no input the desired speed is zero,
+	// so even during the boost the slide brakes at FlatSlideDeceleration, not at the boost acceleration.
+	const FVector Desired = PlanarInput * Target;
+	const double Rate = Planar.Size() > Desired.Size() ? FlatSlideDeceleration : (bBoost ? FlatSlideBoostAcceleration : FlatSlideAcceleration);
+	const FVector Change = (Desired - Planar).GetClampedToMaxSize(Rate * DeltaSeconds);
+	return (Planar + Change).GetClampedToMaxSize(SlopeSlideMaxSpeed);
 }
 
 bool UGMCMotion::ShouldKeepSlopeSlide(bool bRequested, bool bEndOnRelease, float FloorAngle, float StopAngle,
@@ -412,9 +453,17 @@ void UGMCMotion::PhysicsSlopeSlide(float DeltaSeconds)
 	const FVector Gravity = GetGravity();
 	const FVector GravityAlongFloor = Gravity - (Gravity | FloorNormal) * FloorNormal;
 	const FVector FallLine = GravityAlongFloor.GetSafeNormal();
+	const bool bFlatModel = UsesFlatSlideModel(FloorAngle);
 
 	// Velocity in the floor plane, pulled down the fall line, slowed by friction.
 	FVector NewVelocity = Velocity - (Velocity | FloorNormal) * FloorNormal;
+	if (bFlatModel)
+	{
+		// GASP's flat slide (see bFlatSlideEnabled): no fall line to follow; the input steers it.
+		NewVelocity = ComputeFlatSlideVelocity(Velocity, FloorNormal, GetProcessedInputVector(), SlopeSlideElapsed, DeltaSeconds);
+	}
+	else
+	{
 	NewVelocity += GravityAlongFloor * DeltaSeconds;
 
 	const double Speed = NewVelocity.Size();
@@ -436,6 +485,8 @@ void UGMCMotion::PhysicsSlopeSlide(float DeltaSeconds)
 	}
 
 	NewVelocity = NewVelocity.GetClampedToMaxSize(SlopeSlideMaxSpeed);
+	}
+	SlopeSlideElapsed += DeltaSeconds;
 	UpdateVelocity(NewVelocity, DeltaSeconds);
 
 	// Face the slide direction (yaw only).
@@ -2914,6 +2965,23 @@ void UGMCMotion::BindReplicationData_Implementation()
 		EGMC_PredictionMode::ClientAuth_Input,
 		EGMC_CombineMode::CombineIfUnchanged,
 		EGMC_SimulationMode::PeriodicAndOnChange_Output,
+		EGMC_InterpolationFunction::NearestNeighbour
+	);
+
+	BI_SlopeSlideRequestedAtStart = BindBool(
+		bSlopeSlideRequestedAtStart,
+		EGMC_PredictionMode::ServerAuth_Output_ClientValidated,
+		EGMC_CombineMode::CombineIfUnchanged,
+		EGMC_SimulationMode::Periodic_Output,
+		EGMC_InterpolationFunction::NearestNeighbour
+	);
+
+	// The current slide's elapsed time (flat-model boost): a move output, validated against the server like Downed.
+	BI_SlopeSlideElapsed = BindSinglePrecisionFloat(
+		SlopeSlideElapsed,
+		EGMC_PredictionMode::ServerAuth_Output_ClientValidated,
+		EGMC_CombineMode::CombineIfUnchanged,
+		EGMC_SimulationMode::Periodic_Output,
 		EGMC_InterpolationFunction::NearestNeighbour
 	);
 

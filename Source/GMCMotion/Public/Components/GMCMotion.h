@@ -1078,6 +1078,55 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide")
 	bool bSlopeSlideEndOnRelease = true;
 
+	// GASP's flat crouch slide (BP_MovementTransition_ToSlide, BP_MovementMode_Slide). A requested slide also starts on a
+	// floor flatter than SlopeSlideTriggerMinAngle when moving faster than FlatSlideTriggerSpeed in any direction. On a
+	// floor under FlatSlideMaxAngle the slide then moves as GASP's does there: FlatSlideBoostTime easing toward
+	// FlatSlideBoostSpeed at FlatSlideBoostAcceleration, then toward the input at FlatSlideTargetSpeed, slowing at
+	// FlatSlideDeceleration while faster; it ends at FlatSlideExitSpeed, or when the request is released. It runs in
+	// SlopeSlideMovementMode, so a graph that animates the slope slide animates it too. Off: slope slides only.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat")
+	bool bFlatSlideEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideTriggerSpeed = 380.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", ClampMax = "89", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideMaxAngle = 10.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideTargetSpeed = 100.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideDeceleration = 500.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideAcceleration = 300.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideExitSpeed = 200.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideBoostTime = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideBoostSpeed = 800.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GMCMotion|Slope Slide|Flat", meta = (ClampMin = "0", EditCondition = "bFlatSlideEnabled"))
+	float FlatSlideBoostAcceleration = 2000.f;
+
+	// Seconds the current slide has run (GMC-bound, so it rolls back with prediction).
+	UFUNCTION(BlueprintPure, Category = "GMCMotion|Slope Slide|Flat")
+	float GetSlopeSlideElapsed() const { return SlopeSlideElapsed; }
+
+	// A flat floor that the flat model owns (bFlatSlideEnabled and under FlatSlideMaxAngle).
+	bool UsesFlatSlideModel(float FloorAngle) const { return bFlatSlideEnabled && FloorAngle < FlatSlideMaxAngle; }
+
+	// GASP's flat trigger: requested, grounded, flatter than MaxAngle and faster than MinSpeed horizontally.
+	static bool ShouldStartRequestedFlatSlide(bool bRequested, bool bOnGround, float FloorAngle, float MaxAngle, double Speed2D, double MinSpeed);
+
+	// One flat-model step in the floor plane (see bFlatSlideEnabled).
+	FVector ComputeFlatSlideVelocity(const FVector& InVelocity, const FVector& FloorNormal, const FVector& Input, double Elapsed, float DeltaSeconds) const;
+
 	// Optional: a bool on this component (e.g. a Blueprint's GMC-bound WantsToCrouch) that IS the slide request, read at
 	// the start of every move. A held crouch then starts a slide where CanStartSlopeSlide allows it (in practice a press
 	// while sprinting downhill: crouching drops the speed under SlopeSlideTriggerMinSpeed within a few frames) and
@@ -1480,8 +1529,18 @@ private:
 	bool bSlopeSlideRequested = false;
 	int32 BI_SlopeSlideRequested = -1;
 
+	// Seconds the current slide has run (drives the flat model's initial boost). Computed in the move on every machine,
+	// so it is bound like the other predicted move outputs and rolls back with them.
+	float SlopeSlideElapsed = 0.f;
+	int32 BI_SlopeSlideElapsed = -1;
+
+	// Whether the current slide started from a request: on a flat floor a requested slide ends on release (GASP), an
+	// automatic one runs out to FlatSlideExitSpeed. Bound like SlopeSlideElapsed.
+	bool bSlopeSlideRequestedAtStart = false;
+	int32 BI_SlopeSlideRequestedAtStart = -1;
+
 	// Applies or lifts the camera yaw limit (see SlopeSlideCameraYawRange). Called from TickComponent.
-	void UpdateCameraYawLimit();
+	virtual void UpdateCameraYawLimit();
 	bool bCameraYawLimited = false;
 	bool bCameraYawLimitHeld = false;
 	float CameraYawLimitCentre = 0.f;
