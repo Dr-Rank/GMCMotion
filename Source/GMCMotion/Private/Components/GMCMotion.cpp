@@ -3756,6 +3756,11 @@ uint8 UGMCMotion::UpdateStanceCollision(uint8 DesiredStance, float StandHalfHeig
 
 float UGMCMotion::GetOverMaxSpeedDeceleration() const
 {
+	return GetOverMaxSpeedDecelerationFor(!GetProcessedInputVector().IsNearlyZero());
+}
+
+float UGMCMotion::GetOverMaxSpeedDecelerationFor(bool bHasInput) const
+{
 	if (bTraversalExitCarry && !IsMovingOnGround())
 	{
 		// Traversal exit in the air (vault over a drop): the anim's speed is kept until landing, like GASP58's falling mode.
@@ -3773,9 +3778,9 @@ float UGMCMotion::GetOverMaxSpeedDeceleration() const
 		// GASP58 parity (see bGroundOverMaxSpeedUsesBraking). With an input, LimitSpeed runs after ApplyInputVelocity added
 		// the input acceleration: include it so the NET slow-down is the braking deceleration. Without one,
 		// ApplyDeceleration already brakes: nothing more here.
-		return GetProcessedInputVector().IsNearlyZero()
-			? 0.f
-			: GetBrakingDeceleration() + GetInputAcceleration() * FMath::Min(GetGroundFriction(), 1.f);
+		return bHasInput
+			? GetBrakingDeceleration() + GetInputAcceleration() * FMath::Min(GetGroundFriction(), 1.f)
+			: 0.f;
 	}
 	return Super::GetOverMaxSpeedDeceleration();
 }

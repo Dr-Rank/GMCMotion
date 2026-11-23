@@ -1322,6 +1322,12 @@ public:
 	// crowd costs nothing). Called by UGMCMotion_AnimInstance before it reads the floor (game thread).
 	void UpdateSimulatedProxyFloor();
 
+	// The over-max-speed deceleration of a move with or without an input. GetOverMaxSpeedDeceleration() asks it for the
+	// move being run (its processed input); UGMC_TrajectoryPredictor asks it for the input it predicts with
+	// (CustomComputeInputAcceleration). A simulated proxy runs no moves, so its processed input stays zero: read that way,
+	// its predicted speed was never braked back to the max speed and grew without end.
+	float GetOverMaxSpeedDecelerationFor(bool bHasInput) const;
+
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 protected:
