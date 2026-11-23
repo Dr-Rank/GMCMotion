@@ -180,7 +180,8 @@ void UGMC_TrajectoryPredictor::Predict(FTransformTrajectory& InOutTrajectory, in
 	const float MaxSpeed = Movement->GetMaxSpeed();
 	const float Friction = Movement->GetGroundFriction();
 	const float Braking = Movement->GetBrakingDeceleration();
-	const float OverMaxSpeedDecel = Movement->GetOverMaxSpeedDeceleration();
+	// For the input predicted with: the movement's own reading takes its processed input, which a simulated proxy never has.
+	const float OverMaxSpeedDecel = Motion ? Motion->GetOverMaxSpeedDecelerationFor(bHasInput) : Movement->GetOverMaxSpeedDeceleration();
 	const FVector Gravity = Movement->GetGravity();
 
 	// Target yaw the pawn rotates toward each tick: OverridenDesiredFacing (world space), the goal UpdateGroundedFacing
