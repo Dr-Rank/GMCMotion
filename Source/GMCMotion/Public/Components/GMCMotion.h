@@ -1337,6 +1337,9 @@ protected:
 
 	// Regular GMC velocity, smoothed on the ground (see bSmoothGroundVelocity).
 	virtual void CalculateVelocity(float DeltaSeconds) override;
+	virtual void HandleImpact(const FHitResult& Impact, float TimeSlice = 0.f,
+		const FVector& MoveDelta = FVector::ZeroVector) override;
+	virtual void OnActorBaseChanged_Implementation(UPrimitiveComponent* NewBase, UPrimitiveComponent* PreviousBase) override;
 	virtual float GetOverMaxSpeedDeceleration() const override;
 
 	// Computes ReplicatedSpeed, ReplicatedLocomotionAngle, and captures LastLandingVelocity.

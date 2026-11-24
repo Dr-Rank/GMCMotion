@@ -3785,6 +3785,43 @@ float UGMCMotion::GetOverMaxSpeedDecelerationFor(bool bHasInput) const
 	return Super::GetOverMaxSpeedDeceleration();
 }
 
+void UGMCMotion::OnActorBaseChanged_Implementation(UPrimitiveComponent* NewBase, UPrimitiveComponent* PreviousBase)
+{
+	Super::OnActorBaseChanged_Implementation(NewBase, PreviousBase);
+	if (BasedMovement.IsRelative() && NewBase != PreviousBase)
+	{
+		bSmoothStateValid = false;
+		SmoothIntermediateVelocity = FVector2D::ZeroVector;
+		SmoothSpringVelocity = FVector2D::ZeroVector;
+		SmoothSpringAcceleration = FVector2D::ZeroVector;
+	}
+}
+
+void UGMCMotion::HandleImpact(const FHitResult& Impact, float TimeSlice, const FVector& MoveDelta)
+{
+	Super::HandleImpact(Impact, TimeSlice, MoveDelta);
+	if (bSmoothStateValid && ShouldSmoothGroundVelocity() && Impact.IsValidBlockingHit()
+		&& FMath::Abs(Impact.Normal.Z) <= 0.05)
+	{
+		const FVector2D WallNormal = FVector2D(Impact.Normal.X, Impact.Normal.Y).GetSafeNormal();
+		if (FVector2D::DotProduct(FVector2D(MoveDelta.X, MoveDelta.Y), WallNormal) < 0.)
+		{
+			// Native movement stops at the wall. Remove the spring's inward component
+			// as well, so its next step starts from the collision it actually resolved.
+			const auto* Base = BasedMovement.IsRelative() ? GetActorBase() : nullptr;
+			const FVector2D SpringNormal = Base ? WallNormal.GetRotated(-Base->GetComponentRotation().Yaw) : WallNormal;
+			const auto RemoveInwardComponent = [&SpringNormal](FVector2D& Value)
+			{
+				Value -= SpringNormal * FMath::Min(0., FVector2D::DotProduct(Value, SpringNormal));
+			};
+			RemoveInwardComponent(SmoothIntermediateVelocity);
+			RemoveInwardComponent(SmoothSpringVelocity);
+			RemoveInwardComponent(SmoothSpringAcceleration);
+		}
+	}
+
+}
+
 bool UGMCMotion::ShouldSmoothGroundVelocity() const
 {
 	return bSmoothGroundVelocity && IsMovingOnGround() && GetMovementMode() == EGMC_MovementMode::Grounded && !HasRootMotion()
@@ -3796,7 +3833,12 @@ void UGMCMotion::CalculateVelocity(float DeltaSeconds)
 {
 	// Ground velocity smoothing (see bSmoothGroundVelocity): mirror of Mover's USmoothWalkingMode::GenerateWalkMove.
 	const bool bSmooth = ShouldSmoothGroundVelocity() && DeltaSeconds > UE_KINDA_SMALL_NUMBER;
-	const FVector2D ActualVelocity(Velocity.X, Velocity.Y);
+	// Native Relative movement validates velocity in the platform frame. The
+	// spring state shares that frame so a later base rotation does not change
+	// the vectors GMC validates. Super still consumes world-space velocity.
+	const auto* Base = BasedMovement.IsRelative() ? GetActorBase() : nullptr;
+	const double BaseYaw = Base ? Base->GetComponentRotation().Yaw : 0.;
+	const FVector2D ActualVelocity = FVector2D(Velocity.X, Velocity.Y).GetRotated(-BaseYaw);
 	if (bSmooth)
 	{
 		if (!bSmoothStateValid)
@@ -3813,42 +3855,54 @@ void UGMCMotion::CalculateVelocity(float DeltaSeconds)
 			static_cast<float>((GroundOutsideInfluenceSmoothingTime + UE_KINDA_SMALL_NUMBER) / FMath::Max(1. - Match, UE_KINDA_SMALL_NUMBER)));
 		// Turn the intermediate velocity toward the input direction, keeping its length (Mover's TurningStrength).
 		const FVector TurnInput = GetProcessedInputVector();
-		const FVector2D TurnDirection = FVector2D(TurnInput.X, TurnInput.Y).GetSafeNormal();
+		const FVector2D TurnDirection = FVector2D(TurnInput.X, TurnInput.Y).GetRotated(-BaseYaw).GetSafeNormal();
 		if (GroundTurningStrength > 0.f && !TurnDirection.IsNearlyZero())
 		{
 			FMath::ExponentialSmoothingApprox(SmoothIntermediateVelocity, TurnDirection * SmoothIntermediateVelocity.Size(),
 				DeltaSeconds, SpringMath::StrengthToSmoothingTime(GroundTurningStrength));
 		}
 		// GMC's acceleration / braking / speed limits act on the intermediate velocity.
-		Velocity.X = SmoothIntermediateVelocity.X;
-		Velocity.Y = SmoothIntermediateVelocity.Y;
+		const FVector2D WorldIntermediate = SmoothIntermediateVelocity.GetRotated(BaseYaw);
+		Velocity.X = WorldIntermediate.X;
+		Velocity.Y = WorldIntermediate.Y;
 	}
 
 	Super::CalculateVelocity(DeltaSeconds);
 
 	if (bSmooth)
 	{
-		const FVector2D Intermediate(Velocity.X, Velocity.Y);
+		const FVector2D Intermediate = FVector2D(Velocity.X, Velocity.Y).GetRotated(-BaseYaw);
 		const FVector Input = GetProcessedInputVector().GetClampedToMaxSize(1.0);
 		const FVector2D Desired = FVector2D(Input.X, Input.Y) * GetMaxSpeed();
 		const bool bAccelerating = 1.01 * Desired.SizeSquared() > ActualVelocity.SizeSquared();
 		FVector2D Spring = ActualVelocity;
 		SpringMath::CriticalSpringDamper(Spring, SmoothSpringAcceleration, Intermediate,
 			bAccelerating ? GroundAccelerationSmoothingTime : GroundDecelerationSmoothingTime, DeltaSeconds);
-		// Dead zones (Mover's): settle on the target instead of creeping.
-		if ((Intermediate - Spring).SizeSquared() < FMath::Square(0.01))
+		// Settle the spring at its two-decimal movement binding's precision. A residual
+		// acceleration within one unit of the wire format cannot carry useful motion.
+		constexpr double SpringWireIncrement = 0.01;
+		if ((Intermediate - Spring).SizeSquared() < FMath::Square(SpringWireIncrement))
 		{
 			Spring = Intermediate;
-			if (SmoothSpringAcceleration.SizeSquared() < FMath::Square(0.001))
-			{
-				SmoothSpringAcceleration = FVector2D::ZeroVector;
-			}
 		}
+		if (SmoothSpringAcceleration.IsNearlyZero(SpringWireIncrement))
+		{
+			SmoothSpringAcceleration = FVector2D::ZeroVector;
+		}
+        // A changing ground spring is not invariant under combining unequal move steps.
+        // Preserve the original prediction steps while accelerating, braking or turning.
+        // Steady motion can still be combined, and both peers validate the spring state.
+        if (IsPredictedAutonomousProxy() && !CL_IsReplaying()
+            && (!Spring.Equals(ActualVelocity, 0.01) || !SmoothSpringAcceleration.IsNearlyZero(0.01)))
+        {
+            CL_DoNotCombineNextMove();
+        }
 		SmoothIntermediateVelocity = Intermediate;
 		SmoothSpringVelocity = Spring;
 		bSmoothStateValid = true;
-		Velocity.X = Spring.X;
-		Velocity.Y = Spring.Y;
+		const FVector2D WorldSpring = Spring.GetRotated(BaseYaw);
+		Velocity.X = WorldSpring.X;
+		Velocity.Y = WorldSpring.Y;
 	}
 	else
 	{
@@ -3950,6 +4004,21 @@ void UGMCMotion::UpdateGroundedFacing(float DeltaSeconds)
 	if (bTraversalWarpActive && UpdatedComponent)
 	{
 		OverridenDesiredFacing.Yaw = UpdatedComponent->GetComponentRotation().Yaw;
+		FacingSpringPositionYaw = OverridenDesiredFacing.Yaw;
+		FacingSpringVelocityYaw = 0.f;
+		bFacingSpringSettling = false;
+		return;
+	}
+
+
+	// Native GMC has already carried the pawn's rotation into the current base frame.
+	// With no velocity or input there is no new world-space facing direction to apply.
+	if (RotationMode == EGMCMotion_RotationMode::VelocityDirection && BasedMovement.IsRelative()
+		&& IsMovingOnGround() && GetActorBase() && UpdatedComponent
+		&& GetProcessedInputVector().IsNearlyZero() && GetLinearVelocity_GMC().SizeSquared2D() <= 1.0)
+	{
+		OverridenDesiredFacing.Yaw = UpdatedComponent->GetComponentRotation().Yaw;
+		OrientationIntent = OverridenDesiredFacing.Vector();
 		FacingSpringPositionYaw = OverridenDesiredFacing.Yaw;
 		FacingSpringVelocityYaw = 0.f;
 		bFacingSpringSettling = false;
